@@ -9,6 +9,7 @@ export const ACTION_FLAPS = 16;
 export const ACTION_GEAR = 32;
 export const ACTION_MUTE = 64;
 export const ACTION_MENU = 128;
+export const ACTION_FUEL_LOAD = 256;
 
 export function createInput(canvas) {
   const keys = new Set();
@@ -33,7 +34,8 @@ export function createInput(canvas) {
     if (key === 'f') queued |= ACTION_FLAPS;
     if (key === 'g') queued |= ACTION_GEAR;
     if (key === 'm') queued |= ACTION_MUTE;
-    if (key >= '1' && key <= '4') missionChoice = Number(key) - 1;
+    if (key === 'l') queued |= ACTION_FUEL_LOAD;
+    if (key >= '1' && key <= '7') missionChoice = Number(key) - 1;
   }
 
   function onKeyUp(event) {

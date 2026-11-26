@@ -31,7 +31,7 @@ export function drawAircraftShadow(ctx, camera, state) {
 export function drawChaseAircraft(ctx, camera, state, elapsed) {
   const centre = camera.project({ x: state.x, y: state.y, z: state.z });
   if (!centre) return;
-  const unit = clamp(centre.scale, 2.2, 9);
+  const unit = clamp(centre.scale * 1.22, 2.6, 11);
   const bank = -state.roll * 0.62;
   const pitchTilt = clamp(-state.pitch * 0.5, -0.3, 0.3);
   ctx.save();

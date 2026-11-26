@@ -2,11 +2,12 @@
 // the minimap, mission readouts, warnings, and the title, pause and debrief
 // screens. Numbers are drawn large and high-contrast so they stay readable
 // at a glance in flight and in a shrunken screenshot.
-import { WORLD, clamp, feetFromMetres, headingDegrees, knotsFromMetresPerSecond } from './config.js';
+import { FUEL_LOADS, WORLD, clamp, feetFromMetres, headingDegrees, knotsFromMetresPerSecond } from './config.js';
 import { bearingTo, distanceTo, shortestAngle } from './flight.js';
-import { MISSIONS, RING_COURSE, SURVEY_POINTS } from './missions.js';
+import { MISSIONS, RING_COURSE, ROUTE_GATES, SURVEY_POINTS } from './missions.js';
 import { coastXAt, ridgeXAt } from './terrain.js';
 import { PHASE_COMPLETE, PHASE_FAILED, formatClock } from './world.js';
+import { THERMALS, crosswindOnFinal, nearestThermal } from './weather.js';
 
 function panel(ctx, x, y, width, height, alpha) {
   ctx.globalAlpha = alpha;
@@ -28,15 +29,77 @@ function text(ctx, value, x, y, size, colour, align, bold) {
 export function drawHud(ctx, world, camera, width, height) {
   const state = world.flight;
   drawCompassTape(ctx, state, width);
-  drawSpeedTape(ctx, state, height);
-  drawAltitudeTape(ctx, state, width, height);
+  if (camera.view !== 'cockpit') {
+    drawSpeedTape(ctx, state, height);
+    drawAltitudeTape(ctx, state, width, height);
+  }
   drawPitchLadder(ctx, state, width, height);
   drawMissionPanel(ctx, world, width);
+  drawWeatherPanel(ctx, world, height);
   drawMinimap(ctx, world, height, camera.view);
   drawTargetArrow(ctx, world, camera, width, height);
+  drawGlidepath(ctx, world, width, height, camera.view);
   drawWarnings(ctx, world, width, height);
   drawMessageBanner(ctx, world, width, height, camera.view);
   drawControlsHint(ctx, width, height);
+}
+
+function drawWeatherPanel(ctx, world, height) {
+  const state = world.flight;
+  const windKt = Math.round(knotsFromMetresPerSecond(state.wind.speed || 0));
+  const gustKt = Math.round(knotsFromMetresPerSecond((state.wind.speed || 0) + (state.wind.gust || 0)));
+  const windDir = Math.round(headingDegrees(state.wind.direction || 0));
+  const bingo = world.bingoFuel ? world.bingoFuel() : 0;
+  const delta = world.ghostDelta ? world.ghostDelta() : null;
+  const thermal = nearestThermal(state);
+  const x = 14;
+  const y = 12;
+  panel(ctx, x, y, 212, 118, 0.8);
+  text(ctx, `WIND ${String(windDir).padStart(3, '0')}° ${windKt} KT`, x + 12, y + 26, 16, '#7fe3ff', 'left', true);
+  text(ctx, `GUST ${gustKt} KT`, x + 12, y + 48, 15, gustKt > 22 ? '#ff9a8a' : '#cfe9f7', 'left', true);
+  text(ctx, `BINGO ${bingo}`, x + 112, y + 48, 15, state.fuel <= bingo ? '#ff3b30' : '#9dff9d', 'left', true);
+  if (state.thermalLift > 0.4) {
+    text(ctx, `THERMAL +${state.thermalLift.toFixed(1)} m/s`, x + 12, y + 72, 15, '#ffe9a3', 'left', true);
+  } else {
+    text(ctx, `THERMAL ${Math.round(thermal.distance)} m`, x + 12, y + 72, 14, '#cfe9f7', 'left', false);
+  }
+  if (delta !== null) {
+    const ahead = delta >= 0;
+    text(ctx, ahead ? `YOU +${delta.toFixed(0)}s ON GHOST` : `GHOST +${Math.abs(delta).toFixed(0)}s ON YOU`, x + 12, y + 96, 15, ahead ? '#37e0d9' : '#ff9a8a', 'left', true);
+  } else {
+    text(ctx, `XWIND FINAL ${Math.round(knotsFromMetresPerSecond(crosswindOnFinal(state, state.wind)))} KT`, x + 12, y + 96, 14, '#cfe9f7', 'left', false);
+  }
+}
+
+function drawGlidepath(ctx, world, width, height, view) {
+  const state = world.flight;
+  if (state.onGround) return;
+  const onFinal =
+    world.mission.id === 'crosswind-circuit' ||
+    world.mission.id === 'deadstick-return' ||
+    world.ringsDone >= RING_COURSE.length ||
+    world.photosDone >= SURVEY_POINTS.length;
+  if (!onFinal) return;
+  const dx = WORLD.runway.x - state.x;
+  const dz = WORLD.runway.z - state.z;
+  const distance = Math.sqrt(dx * dx + dz * dz);
+  if (distance > 2600 || distance < 120) return;
+  const idealAlt = WORLD.runway.elevation + distance * 0.052;
+  const error = state.y - idealAlt;
+  const x = width - 132;
+  const y = view === 'cockpit' ? 170 : height * 0.3 + height * 0.36 + 44;
+  panel(ctx, x, y, 118, 86, 0.8);
+  text(ctx, 'GLIDE', x + 59, y + 22, 14, '#eaf6ff', 'center', true);
+  for (let i = 0; i < 4; i += 1) {
+    const onGlide = Math.abs(error) < 22;
+    const tooHigh = error > 22;
+    const lit = onGlide ? i < 2 : tooHigh ? i < 1 : i < 3;
+    ctx.fillStyle = lit ? (i < 2 ? '#ff5a4e' : '#7dff8a') : '#33404f';
+    ctx.beginPath();
+    ctx.arc(x + 24 + i * 24, y + 48, 8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  text(ctx, error > 22 ? 'HIGH' : error < -22 ? 'LOW' : 'ON PATH', x + 59, y + 76, 14, Math.abs(error) < 22 ? '#7dff8a' : '#ffd76a', 'center', true);
 }
 
 function drawCompassTape(ctx, state, width) {
@@ -165,9 +228,9 @@ function drawPitchLadder(ctx, state, width, height) {
 }
 
 function drawMissionPanel(ctx, world, width) {
-  const panelWidth = 330;
+  const panelWidth = 340;
   const x = width - panelWidth - 14;
-  panel(ctx, x, 12, panelWidth, 118, 0.78);
+  panel(ctx, x, 12, panelWidth, 146, 0.78);
   text(ctx, world.mission.name.toUpperCase(), x + 14, 40, 20, '#ffd76a', 'left', true);
   text(ctx, world.objectiveLabel(), x + 14, 66, 16, '#eaf6ff', 'left', true);
   text(ctx, `SCORE ${world.score}`, x + 14, 92, 19, '#7dff8a', 'left', true);
@@ -176,13 +239,19 @@ function drawMissionPanel(ctx, world, width) {
   text(ctx, `FUEL ${Math.round(state.fuel)}`, x + 14, 116, 15, state.fuel < 18 ? '#ff9a8a' : '#7fe3ff', 'left', true);
   text(ctx, `DMG ${Math.round(state.damage)}%`, x + 110, 116, 15, state.damage > 40 ? '#ff9a8a' : '#cfe9f7', 'left', true);
   text(ctx, state.gearDown ? 'GEAR DOWN' : 'GEAR UP', x + 205, 116, 15, state.gearDown ? '#9dff9d' : '#ffd76a', 'left', true);
-  if (world.mission.id === 'ridge-rings') {
+  if (['ridge-rings', 'storm-ridge', 'dusk-final'].includes(world.mission.id)) {
     for (let i = 0; i < RING_COURSE.length; i += 1) {
       ctx.fillStyle = i < world.ringsDone ? '#43e06b' : i === world.ringsDone ? '#ffb52e' : '#4a6b80';
       ctx.beginPath();
       ctx.arc(x + panelWidth - 26 - (RING_COURSE.length - 1 - i) * 22, 34, 8, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+  if (world.routeTaken) {
+    const gate = ROUTE_GATES.find((g) => g.id === world.routeTaken);
+    if (gate) text(ctx, `ROUTE: ${gate.label.toUpperCase()}`, x + 14, 140, 13, '#7dff8a', 'left', true);
+  } else if (world.mission.routeChoice && world.ringsDone === 2) {
+    text(ctx, 'ROUTE: SHORTCUT +800 / HIGH ROAD +500', x + 14, 140, 13, '#ffd76a', 'left', true);
   }
   if (world.photoHold > 0) {
     ctx.fillStyle = '#0e1622';
@@ -196,7 +265,7 @@ function drawMinimap(ctx, world, height, view) {
   const cockpit = view === 'cockpit';
   const size = cockpit ? 150 : 196;
   const x = 14;
-  const y = cockpit ? 14 : height - size - 46;
+  const y = cockpit ? 142 : height - size - 46;
   panel(ctx, x, y, size, size, 0.82);
   const scale = size / 7600;
   function mapX(worldX) {
@@ -237,7 +306,22 @@ function drawMinimap(ctx, world, height, view) {
   ctx.fill();
   ctx.fillStyle = '#f4f6f2';
   ctx.fillRect(mapX(WORLD.runway.x) - 3, mapY(WORLD.runway.z) - 16, 6, 32);
-  if (world.mission.id === 'ridge-rings') {
+  THERMALS.forEach((thermal) => {
+    ctx.strokeStyle = '#ffe9a3';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(mapX(thermal.x), mapY(thermal.z), 7, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+  if (world.mission.routeChoice && world.ringsDone === 2 && !world.routeTaken) {
+    ROUTE_GATES.forEach((gate) => {
+      ctx.fillStyle = gate.id === 'shortcut' ? '#ff7a59' : '#7dff8a';
+      ctx.beginPath();
+      ctx.arc(mapX(gate.x), mapY(gate.z), 6, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+  if (['ridge-rings', 'storm-ridge', 'dusk-final'].includes(world.mission.id)) {
     RING_COURSE.forEach((ring, index) => {
       ctx.strokeStyle = index < world.ringsDone ? '#43e06b' : index === world.ringsDone ? '#ffb52e' : '#37c8d9';
       ctx.lineWidth = 2.5;
@@ -245,6 +329,13 @@ function drawMinimap(ctx, world, height, view) {
       ctx.arc(mapX(ring.x), mapY(ring.z), 6, 0, Math.PI * 2);
       ctx.stroke();
     });
+  }
+  const ghost = world.ghostNow ? world.ghostNow() : null;
+  if (ghost) {
+    ctx.fillStyle = '#37e0d9';
+    ctx.beginPath();
+    ctx.arc(mapX(ghost.x), mapY(ghost.z), 5, 0, Math.PI * 2);
+    ctx.fill();
   }
   if (world.mission.id === 'coastal-survey') {
     SURVEY_POINTS.forEach((point, index) => {
@@ -318,7 +409,10 @@ function drawWarnings(ctx, world, width, height) {
   if (state.stalled && !state.onGround) warnings.push({ label: 'STALL: NOSE DOWN, ADD POWER', colour: '#ff3b30' });
   if (state.engineOut && !state.onGround) warnings.push({ label: 'ENGINE OUT: GLIDE TO THE STRIP', colour: '#ff9f2e' });
   if (!state.gearDown && state.y - 0 < 260 && !state.onGround && state.verticalSpeed < -1) warnings.push({ label: 'GEAR UP: PRESS G', colour: '#ffd76a' });
-  if (state.fuel < 15 && !state.engineOut) warnings.push({ label: 'LOW FUEL', colour: '#ff9f2e' });
+  const bingo = world.bingoFuel ? world.bingoFuel() : 15;
+  if (state.fuel <= bingo && !state.engineOut && !state.onGround) warnings.push({ label: `BINGO FUEL: HEAD HOME (${Math.round(state.fuel)} LEFT)`, colour: '#ff9f2e' });
+  if ((state.wind.gust || 0) > 3.4 && !state.onGround) warnings.push({ label: 'GUST FRONT: HOLD THE WINGS LEVEL', colour: '#ffd76a' });
+  if (state.thermalLift > 1.6 && !state.onGround) warnings.push({ label: 'THERMAL: CIRCLE TO CLIMB FREE', colour: '#ffe9a3' });
   warnings.slice(0, 2).forEach((warning, index) => {
     const y = height * 0.24 + index * 44;
     const flash = Math.sin(world.elapsed * 7) > -0.4;
@@ -343,24 +437,26 @@ function drawControlsHint(ctx, width, height) {
   text(ctx, 'Arrows fly · W/S throttle · A/D rudder · F flaps · G gear · C camera · P pause', width / 2, height - 14, 14, '#dceef8', 'center', false);
 }
 
-export function drawTitleScreen(ctx, world, width, height, best) {
+export function drawTitleScreen(ctx, world, width, height, best, fuelLoadId = 'normal') {
   ctx.globalAlpha = 0.55;
   ctx.fillStyle = '#08111d';
   ctx.fillRect(0, 0, width, height);
   ctx.globalAlpha = 1;
-  text(ctx, 'KESTREL RIDGE', width / 2, height * 0.2, 64, '#ffd76a', 'center', true);
-  text(ctx, 'Coastal flight trials in the Kestrel K-7', width / 2, height * 0.2 + 42, 22, '#eaf6ff', 'center', false);
-  const panelWidth = Math.min(760, width * 0.72);
+  text(ctx, 'KESTREL RIDGE', width / 2, height * 0.13, 58, '#ffd76a', 'center', true);
+  text(ctx, 'Weather-routed flight trials against the par ghost', width / 2, height * 0.13 + 38, 21, '#eaf6ff', 'center', false);
+  const panelWidth = Math.min(820, width * 0.78);
   const x = width / 2 - panelWidth / 2;
-  panel(ctx, x, height * 0.3, panelWidth, height * 0.42, 0.88);
+  panel(ctx, x, height * 0.22, panelWidth, height * 0.56, 0.9);
   MISSIONS.forEach((mission, index) => {
-    const y = height * 0.3 + 52 + index * 62;
-    text(ctx, `${index + 1}. ${mission.name}`, x + 30, y, 24, '#ffe9a3', 'left', true);
-    text(ctx, mission.brief, x + 30, y + 26, 16, '#cfe9f7', 'left', false);
+    const y = height * 0.22 + 44 + index * 54;
+    text(ctx, `${index + 1}. ${mission.name}`, x + 28, y, 22, '#ffe9a3', 'left', true);
+    text(ctx, mission.brief, x + 28, y + 23, 14, '#cfe9f7', 'left', false);
+    if (mission.weather) text(ctx, mission.weather.label.toUpperCase(), x + panelWidth - 28, y, 14, '#7fe3ff', 'right', true);
   });
-  text(ctx, 'Press 1-4 or click a sortie to fly', width / 2, height * 0.78, 20, '#7dff8a', 'center', true);
-  text(ctx, 'Arrows pitch and roll · W/S throttle · A/D rudder · mouse drag steers · wheel throttle', width / 2, height * 0.78 + 30, 15, '#dceef8', 'center', false);
-  if (best > 0) text(ctx, `Best score: ${best}`, width / 2, height * 0.78 + 58, 16, '#ffe9a3', 'center', true);
+  const load = FUEL_LOADS.find((entry) => entry.id === fuelLoadId) || FUEL_LOADS[1];
+  text(ctx, `Press 1-7 or click a sortie · L: fuel ${load.label} (${load.note})`, width / 2, height * 0.84, 19, '#7dff8a', 'center', true);
+  text(ctx, 'Arrows pitch and roll · W/S throttle · A/D rudder · mouse drag steers · wheel throttle', width / 2, height * 0.84 + 28, 15, '#dceef8', 'center', false);
+  if (best > 0) text(ctx, `Best score: ${best}`, width / 2, height * 0.84 + 54, 16, '#ffe9a3', 'center', true);
 }
 
 export function drawPauseOverlay(ctx, width, height) {
@@ -398,12 +494,12 @@ export function drawDebriefPanel(ctx, world, width, height, best) {
 }
 
 export function titleMissionAt(width, height, px, py) {
-  const panelWidth = Math.min(760, width * 0.72);
+  const panelWidth = Math.min(820, width * 0.78);
   const x = width / 2 - panelWidth / 2;
   if (px < x || px > x + panelWidth) return null;
   for (let index = 0; index < MISSIONS.length; index += 1) {
-    const y = height * 0.3 + 52 + index * 62;
-    if (py >= y - 30 && py <= y + 32) return MISSIONS[index].id;
+    const y = height * 0.22 + 44 + index * 54;
+    if (py >= y - 28 && py <= y + 30) return MISSIONS[index].id;
   }
   return null;
 }

@@ -53,7 +53,22 @@ export const SCORE = {
   roughLanding: 250,
   fuelPerUnit: 6,
   secondSaved: 4,
+  routeShortcut: 800,
+  routeHighRoad: 500,
+  touchdownZone: 600,
+  ghostBeaten: 750,
+  thermalClimb: 300,
 };
+
+export const FUEL_LOADS = [
+  { id: 'light', label: 'LIGHT', fuel: 52, mass: 0.9, note: 'climbs fast, no detours' },
+  { id: 'normal', label: 'NORMAL', fuel: 76, mass: 1, note: 'balanced reserve' },
+  { id: 'full', label: 'FULL', fuel: 100, mass: 1.12, note: 'heavy: higher stall, long legs' },
+];
+
+export function fuelLoadById(id) {
+  return FUEL_LOADS.find((load) => load.id === id) || FUEL_LOADS[1];
+}
 
 export function knotsFromMetresPerSecond(speed) {
   return speed * 1.94384;

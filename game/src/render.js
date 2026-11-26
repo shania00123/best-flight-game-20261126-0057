@@ -4,7 +4,8 @@
 // and the staged screenshot scenes.
 import { TERRAIN, WORLD, clamp } from './config.js';
 import { LAND, landTypeAt, terrainHeightAt } from './terrain.js';
-import { MISSION_RINGS, RING_COURSE } from './missions.js';
+import { MISSION_CROSSWIND, MISSION_DUSK, MISSION_RINGS, MISSION_STORM, RING_COURSE, ROUTE_GATES } from './missions.js';
+import { THERMALS } from './weather.js';
 
 const LAND_COLOURS = {
   [LAND.WATER]: ['#22749f', '#277dab', '#1e6a93'],
@@ -36,12 +37,24 @@ function polygon(ctx, points, fill) {
   ctx.fill();
 }
 
-export function drawSky(ctx, camera, width, height, elapsed) {
+export function drawSky(ctx, camera, width, height, elapsed, dusk = 0) {
   const gradient = ctx.createLinearGradient(0, 0, 0, height);
-  gradient.addColorStop(0, '#2e6fc2');
-  gradient.addColorStop(0.45, '#6db3e8');
-  gradient.addColorStop(0.72, '#bfe0f2');
-  gradient.addColorStop(1, '#e8f2e4');
+  if (dusk > 0.6) {
+    gradient.addColorStop(0, '#2b2a55');
+    gradient.addColorStop(0.45, '#7a4a6b');
+    gradient.addColorStop(0.72, '#e08a5a');
+    gradient.addColorStop(1, '#f2c98a');
+  } else if (dusk > 0.1) {
+    gradient.addColorStop(0, '#3a5f9e');
+    gradient.addColorStop(0.45, '#7d9fc4');
+    gradient.addColorStop(0.72, '#d9b48a');
+    gradient.addColorStop(1, '#e8d9b0');
+  } else {
+    gradient.addColorStop(0, '#2e6fc2');
+    gradient.addColorStop(0.45, '#6db3e8');
+    gradient.addColorStop(0.72, '#bfe0f2');
+    gradient.addColorStop(1, '#e8f2e4');
+  }
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
   const sun = camera.project({ x: camera.position.x - 2600, y: camera.position.y + 1500, z: camera.position.z + 5200 });
@@ -168,6 +181,11 @@ export function drawRunway(ctx, camera) {
       if (threshold.every((point) => point !== null)) polygon(ctx, threshold, '#f4f6f2');
     }
   }
+  for (const side of [-1, 1]) {
+    const zoneBar = [pointAt(-halfL + 150, side * 13, 0.8), pointAt(-halfL + 330, side * 13, 0.8), pointAt(-halfL + 330, side * 16, 0.8), pointAt(-halfL + 150, side * 16, 0.8)]
+      .map((point) => camera.project(point));
+    if (zoneBar.every((point) => point !== null)) polygon(ctx, zoneBar, '#ffd76a');
+  }
   drawRunwayLights(ctx, camera, pointAt, halfL, halfW);
 }
 
@@ -276,8 +294,75 @@ export function drawLighthouse(ctx, camera, elapsed) {
   }
 }
 
+export function drawThermals(ctx, camera, elapsed) {
+  for (const thermal of THERMALS) {
+    const base = camera.project({ x: thermal.x, y: Math.max(terrainHeightAt(thermal.x, thermal.z), 0), z: thermal.z });
+    const top = camera.project({ x: thermal.x, y: thermal.top, z: thermal.z });
+    if (!base || !top || base.depth > 7000) continue;
+    ctx.globalAlpha = 0.16 + 0.05 * Math.sin(elapsed * 1.8 + thermal.x);
+    ctx.strokeStyle = '#ffe9a3';
+    ctx.lineWidth = clamp(base.scale * 3, 2, 7);
+    ctx.beginPath();
+    ctx.moveTo(base.x, base.y);
+    ctx.lineTo(top.x, top.y);
+    ctx.stroke();
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#ffe9a3';
+    ctx.beginPath();
+    ctx.arc(top.x, top.y, clamp(top.scale * 5, 3, 12), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+}
+
+export function drawRouteGates(ctx, camera, world, elapsed) {
+  if (!world.mission.routeChoice || world.ringsDone !== 2 || world.routeTaken) return;
+  for (const gate of ROUTE_GATES) {
+    drawRing(ctx, camera, gate, gate.id === 'shortcut' ? '#ff7a59' : '#7dff8a', true, elapsed);
+    const projected = camera.project(gate);
+    if (projected) {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 16px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${gate.label} +${gate.points}`, projected.x, projected.y - clamp(projected.scale * 16, 24, 70));
+    }
+  }
+}
+
+export function drawGhostAircraft(ctx, camera, ghost) {
+  if (!ghost) return;
+  const centre = camera.project(ghost);
+  if (!centre || centre.depth > 6000) return;
+  const unit = clamp(centre.scale * 1.35, 2, 9);
+  ctx.save();
+  ctx.translate(centre.x, centre.y);
+  ctx.rotate(-(ghost.roll || 0) * 0.62);
+  ctx.scale(unit, unit);
+  ctx.globalAlpha = 0.62;
+  ctx.fillStyle = '#37e0d9';
+  ctx.beginPath();
+  ctx.moveTo(-14, 1);
+  ctx.lineTo(14, 1);
+  ctx.lineTo(3, 3);
+  ctx.lineTo(-3, 3);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#b8fffa';
+  ctx.fillRect(-2.6, -5, 5.2, 9);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  ctx.fillStyle = '#37e0d9';
+  ctx.font = 'bold 14px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('GHOST', centre.x, centre.y - unit * 8);
+}
+
 export function drawRings(ctx, camera, world, elapsed) {
-  if (world.mission.id !== MISSION_RINGS) return;
+  if (![MISSION_RINGS, MISSION_STORM, MISSION_DUSK, MISSION_CROSSWIND].includes(world.mission.id)) return;
+  if (world.mission.id === MISSION_CROSSWIND) {
+    drawRing(ctx, camera, { x: -1150, y: 260, z: 400, heading: 0.4 }, '#ffb52e', world.ringsDone < 1, elapsed);
+    return;
+  }
   const ordered = RING_COURSE.map((ring, index) => {
     const projected = camera.project(ring);
     return { ring, index, depth: projected ? projected.depth : 99999 };
@@ -341,11 +426,15 @@ function drawRingBeacon(ctx, camera, ring, elapsed) {
 }
 
 export function drawScene(ctx, camera, world, width, height) {
-  drawSky(ctx, camera, width, height, world.elapsed);
+  const dusk = world.mission.weather ? world.mission.weather.dusk : 0;
+  drawSky(ctx, camera, width, height, world.elapsed, dusk);
   drawTerrain(ctx, camera, world.flight);
   drawRunway(ctx, camera);
   drawCity(ctx, camera, world.cityBlocks);
   drawLighthouse(ctx, camera, world.elapsed);
+  drawThermals(ctx, camera, world.elapsed);
   drawRings(ctx, camera, world, world.elapsed);
+  drawRouteGates(ctx, camera, world, world.elapsed);
+  drawGhostAircraft(ctx, camera, world.ghostNow ? world.ghostNow() : null);
   drawClouds(ctx, camera, world.clouds);
 }

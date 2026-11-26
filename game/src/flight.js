@@ -3,6 +3,7 @@
 // happened, so the game loop and the screenshot autopilot fly identical rules.
 import { AIRCRAFT, clamp } from './config.js';
 import { onRunway, runwayLocal, slopeFactorAt, terrainHeightAt } from './terrain.js';
+import { gustRollAt, thermalLiftAt, windAt } from './weather.js';
 
 export const EVENT_NONE = 0;
 export const EVENT_RING = 1;
@@ -32,7 +33,11 @@ export function createFlightState(pose) {
     stalled: false,
     engineOut: false,
     braking: false,
-    wind: { x: 2.4, z: -1.1 },
+    wind: { x: 2.4, z: -1.1, speed: 3, gust: 0, direction: -0.7 },
+    mass: 1,
+    thermalLift: 0,
+    weatherProfile: { windBase: 3, gust: 1.2, thermal: 1, dusk: 0, label: 'Calm' },
+    weatherElapsed: 0,
     lastLanding: null,
   };
 }
@@ -47,7 +52,15 @@ export function forwardVector(state) {
 }
 
 export function stallSpeedFor(state) {
-  return state.flaps ? AIRCRAFT.stallSpeedFlaps : AIRCRAFT.stallSpeedClean;
+  const base = state.flaps ? AIRCRAFT.stallSpeedFlaps : AIRCRAFT.stallSpeedClean;
+  return base * (state.mass || 1);
+}
+
+export function touchdownZoneFor(state) {
+  const local = runwayLocal(state.x, state.z);
+  const fromThreshold = local.along + 490;
+  const inZone = fromThreshold >= 60 && fromThreshold <= 360 && Math.abs(local.across) < 14;
+  return { fromThreshold: Math.round(fromThreshold), across: Math.round(local.across), inZone };
 }
 
 export function stepFlight(state, controls, dt) {
@@ -63,8 +76,13 @@ export function stepFlight(state, controls, dt) {
     state.throttle = 0;
   }
   state.braking = controls.brake === true;
-  state.wind.x = 2.2 + Math.sin(state.z * 0.0004) * 1.3;
-  state.wind.z = -1.0 + Math.cos(state.x * 0.0005) * 0.8;
+  state.weatherElapsed += dt;
+  const profile = state.weatherProfile;
+  state.wind = windAt(state, state.weatherElapsed, profile);
+  state.thermalLift = thermalLiftAt(state, profile);
+  if (!state.onGround) {
+    state.roll = clamp(state.roll + gustRollAt(state, state.weatherElapsed, profile) * dt * 3, -AIRCRAFT.maxRoll, AIRCRAFT.maxRoll);
+  }
 
   if (state.onGround) {
     stepGroundRoll(state, controls, dt);
@@ -90,8 +108,9 @@ export function stepFlight(state, controls, dt) {
 
   const gearDrag = state.gearTransit < 0.5 ? 0.0011 : 0;
   const flapDrag = state.flaps ? 0.0016 : 0;
-  const drag = (AIRCRAFT.dragBase + gearDrag + flapDrag) * state.speed * state.speed;
-  const thrust = state.engineOut || state.fuel <= 0 ? 0 : state.throttle * AIRCRAFT.thrustAccel;
+  const mass = state.mass || 1;
+  const drag = (AIRCRAFT.dragBase + gearDrag + flapDrag) * mass * state.speed * state.speed;
+  const thrust = state.engineOut || state.fuel <= 0 ? 0 : (state.throttle * AIRCRAFT.thrustAccel) / mass;
   const gravity = -9.81 * Math.sin(state.pitch) * 0.82;
   state.speed = clamp(state.speed + (thrust - drag + gravity) * dt, 0, AIRCRAFT.maxSpeed);
 
@@ -99,6 +118,7 @@ export function stepFlight(state, controls, dt) {
   let vy = forward.y * state.speed;
   if (state.stalled) vy -= (stallSpeed - state.speed) * 0.42;
   if (state.flaps && !state.stalled) vy += 0.7;
+  vy += state.thermalLift;
   state.verticalSpeed = vy;
   state.x += (forward.x * state.speed + state.wind.x) * dt;
   state.z += (forward.z * state.speed + state.wind.z) * dt;
@@ -135,7 +155,7 @@ function stepGroundRoll(state, controls, dt) {
 
 function burnFuel(state, dt) {
   if (state.engineOut) return;
-  const burn = (0.22 + state.throttle * 0.85) * dt * 0.62;
+  const burn = (0.22 + state.throttle * 0.85) * dt * 0.3 * (state.mass || 1);
   state.fuel = clamp(state.fuel - burn, 0, AIRCRAFT.fuelCapacity);
 }
 
@@ -159,13 +179,16 @@ export function gradeLanding(state) {
     }
     return { grade: 'field', label: 'Field landing away from the strip', damage: 28, score: 180, crashed: false };
   }
+  const zone = touchdownZoneFor(state);
+  const zoneBonus = zone.inZone ? 600 : 0;
+  const zoneNote = zone.inZone ? ` in the zone (${zone.fromThreshold} m)` : ` at ${zone.fromThreshold} m`;
   if (descent <= 1.6 && aligned && centred) {
-    return { grade: 'smooth', label: 'Greased it: smooth and centred', damage: 0, score: 1200, crashed: false };
+    return { grade: 'smooth', label: `Greased it${zoneNote}`, damage: 0, score: 1200 + zoneBonus, crashed: false, zone };
   }
   if (descent <= 3.4 && aligned) {
-    return { grade: 'firm', label: 'Firm arrival, safely down', damage: 6, score: 650, crashed: false };
+    return { grade: 'firm', label: `Firm arrival${zoneNote}`, damage: 6, score: 650 + zoneBonus, crashed: false, zone };
   }
-  return { grade: 'rough', label: 'Rough arrival: check the gear legs', damage: 18, score: 250, crashed: false };
+  return { grade: 'rough', label: `Rough arrival${zoneNote}: check the gear legs`, damage: 18, score: 250 + zoneBonus, crashed: false, zone };
 }
 
 function settleOnGround(state) {

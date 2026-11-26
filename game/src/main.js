@@ -5,13 +5,14 @@
 // ?seed=N fixes the world. ?shot=cover|cockpit|survey|debrief (with &seed=N)
 // stages that scene instead of running the loop, paints it twice and sets
 // window.__shotReady for a screenshot.
-import { BEST_KEY, STEP } from './config.js';
+import { BEST_KEY, FUEL_LOADS, STEP } from './config.js';
 import { createRandom } from './random.js';
 import { PHASE_COMPLETE, PHASE_FAILED, createWorld } from './world.js';
 import {
   ACTION_CAMERA,
   ACTION_CONFIRM,
   ACTION_FLAPS,
+  ACTION_FUEL_LOAD,
   ACTION_GEAR,
   ACTION_MENU,
   ACTION_MUTE,
@@ -62,6 +63,8 @@ function saveBest(value) {
   }
 }
 
+let fuelLoadIndex = 1;
+
 function paint(screen, best) {
   const width = canvas.width;
   const height = canvas.height;
@@ -74,7 +77,7 @@ function paint(screen, best) {
     drawCockpit(ctx, world.flight, width, height);
   }
   drawHud(ctx, world, camera, width, height);
-  if (screen === SCREEN_TITLE) drawTitleScreen(ctx, world, width, height, best);
+  if (screen === SCREEN_TITLE) drawTitleScreen(ctx, world, width, height, best, FUEL_LOADS[fuelLoadIndex].id);
   if (screen === SCREEN_PAUSED) drawPauseOverlay(ctx, width, height);
   if (screen === SCREEN_DEBRIEF) drawDebriefPanel(ctx, world, width, height, best);
 }
@@ -113,7 +116,7 @@ function runGame() {
   }
 
   function startSortie(missionId) {
-    world.reset(missionId);
+    world.reset(missionId, FUEL_LOADS[fuelLoadIndex].id);
     accumulator = 0;
     screen = SCREEN_PLAY;
     audio.unlock();
@@ -134,6 +137,10 @@ function runGame() {
     const choice = input.takeMissionChoice();
     const click = input.takeClick();
     if (actions & ACTION_MUTE) audio.toggleMute();
+    if (actions & ACTION_FUEL_LOAD) {
+      fuelLoadIndex = (fuelLoadIndex + 1) % FUEL_LOADS.length;
+      announce(`Fuel load ${FUEL_LOADS[fuelLoadIndex].label}: ${FUEL_LOADS[fuelLoadIndex].note}`);
+    }
     if (screen === SCREEN_TITLE) {
       if (choice !== null && MISSIONS[choice]) startSortie(MISSIONS[choice].id);
       else if (click) {
